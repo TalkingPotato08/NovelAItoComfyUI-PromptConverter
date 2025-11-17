@@ -1,2 +1,2 @@
-# NovelAItoComfyUI-PromptConvertorer
-NovelAI to ComfyUI Prompt Convertorer
+# NovelAItoComfyUI-PromptConverter
+NovelAI to ComfyUI Prompt Converter
