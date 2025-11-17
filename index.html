@@ -27,7 +27,7 @@
         }
         textarea {
             width: 100%;
-            height: 150px;
+            height: 180px;
             padding: 10px;
             border: 1px solid #dddfe2;
             border-radius: 6px;
@@ -152,7 +152,9 @@
         
         <div>
             <label for="novelai-prompt">NovelAI 프롬프트 입력:</label>
-            <textarea id="novelai-prompt" placeholder="예시: masterpiece, {{{hyper_detailed}}}, 1.2::a_girl::, ||cat|dog||, {red|blue|yellow}_dress, [fantasy:cyberpunk:0.5]"></textarea>
+            <textarea id="novelai-prompt" placeholder="masterpiece, {{{hyper_detailed}}},
+(emphasis), ((strong_emphasis)),
+by_artist_name, a girl with (long hair, blue eyes)"></textarea>
         </div>
 
         <div class="toggle-container">
@@ -177,6 +179,8 @@
         
         <h3>기본 가중치 변환</h3>
         <ul>
+            <li><code>(태그)</code> : 한 쌍의 소괄호는 형식 유지</li>
+            <li><code>((태그))</code> : 두 쌍 이상의 소괄호는 가중치 1.1배 적용</li>
             <li><code>{태그}</code> : 가중치 1.05배 적용</li>
             <li><code>[태그]</code> : 가중치 1/1.05배 (약 0.95배) 적용</li>
             <li><b>계산 방식 토글:</b> 다중 괄호 계산 방식을 선택합니다.
@@ -207,103 +211,133 @@
         document.getElementById('convert-btn').addEventListener('click', () => {
             const novelaiPrompt = document.getElementById('novelai-prompt').value;
             const isAdditive = document.getElementById('calc-method-toggle').checked;
-            const tags = novelaiPrompt.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
-            
-            const convertedTags = tags.map(tag => {
-                // Rule for ComfyUI Prompt Editing: [from:to:when]
-                const promptEditRegex = /^\[(.*?):(.*?):(\d+\.?\d*)\]$/;
-                const promptEditMatch = tag.match(promptEditRegex);
-                if (promptEditMatch) {
-                    const from = promptEditMatch[1].trim().replace(/_/g, ' ');
-                    const to = promptEditMatch[2].trim().replace(/_/g, ' ');
-                    const when = promptEditMatch[3];
-                    return `[${from}:${to}:${when}]`;
-                }
 
-                // Rule for ComfyUI Random Choice: {A|B|C}
-                const randomChoiceRegex = /^\{(.*\|.*)\}$/;
-                const randomChoiceMatch = tag.match(randomChoiceRegex);
-                if (randomChoiceMatch) {
-                    let content = randomChoiceMatch[1].trim().replace(/_/g, ' ');
-                    return `{${content}}`; // Keep as is for ComfyUI
-                }
+            const lines = novelaiPrompt.split('\n');
 
-                // Rule: Custom weight like 1.5::tag::
-                const weightRegex = /^(\d+\.?\d*)::(.*?)::$/;
-                const weightMatch = tag.match(weightRegex);
-                if (weightMatch) {
-                    const weight = parseFloat(weightMatch[1]);
-                    let content = weightMatch[2].trim().replace(/_/g, ' ');
-                    content = content.replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-                    return `(${content}:${weight.toFixed(2)})`;
-                }
-
-                // Rule: Prompt crossing like ||tag1|tag2||
-                const crossPromptRegex = /^\|\|(.*?)\|\|$/;
-                const crossPromptMatch = tag.match(crossPromptRegex);
-                if (crossPromptMatch) {
-                    let content = crossPromptMatch[1].trim().replace(/_/g, ' ');
-                    return `[${content}]`;
-                }
-
-                // Original rules for {} and []
-                let content = tag;
-                let braceCount = 0;
-                let bracketCount = 0;
-
-                while (content.startsWith('{') && content.endsWith('}')) {
-                    braceCount++;
-                    content = content.substring(1, content.length - 1).trim();
-                }
-
-                while (content.startsWith('[') && content.endsWith(']')) {
-                    bracketCount++;
-                    content = content.substring(1, content.length - 1).trim();
-                }
-
-                // Rule: Remove 'artist:' or 'by ' prefix
-                if (content.toLowerCase().startsWith('artist:')) {
-                    content = content.substring(7).trim();
-                } else if (content.toLowerCase().startsWith('by ')) {
-                    content = content.substring(3).trim();
-                }
+            const processedLines = lines.map(line => {
+                const hasTrailingComma = line.trim().endsWith(',');
                 
-                // Rule: Replace underscores with spaces
-                content = content.replace(/_/g, ' ');
+                const tags = line.match(/(\([^)]*\)|\[[^\]]*\]|\{[^}]*\}|[^,])+/g) || [];
 
-                // Rule: Escape parentheses in tags like 'author (series)'
-                content = content.replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-                
-                if (braceCount === 0 && bracketCount === 0) {
-                    return content;
-                }
+                const convertedTags = tags.map(rawTag => {
+                    const tag = rawTag.trim();
+                    if (!tag) return null;
 
-                let weight = 1.0;
+                    // Rule for simple SD weight syntax like (tag) or ((tag))
+                    const simpleWeightRegex = /^\s*(\(+)(.+?)(\)+)\s*$/;
+                    const simpleWeightMatch = tag.match(simpleWeightRegex);
+                    if (simpleWeightMatch && !simpleWeightMatch[2].includes(':')) {
+                        const openBrackets = simpleWeightMatch[1];
+                        const content = simpleWeightMatch[2].trim().replace(/_/g, ' ');
+                        const closeBrackets = simpleWeightMatch[3];
+                        const count = openBrackets.length;
 
-                if (isAdditive) { // Additive calculation
-                    if (braceCount > 0) {
-                        weight = 1 + (0.05 * braceCount);
-                    } else if (bracketCount > 0) {
-                        weight = 1 - (0.05 * bracketCount);
+                        if (openBrackets.length !== closeBrackets.length) { // Mismatched brackets
+                            return tag; 
+                        }
+
+                        if (count === 1) { // Single pair: (tag) -> keep as is
+                            return `(${content})`;
+                        }
+                        
+                        if (count > 1) { // Multiple pairs: ((tag)) -> convert to (tag:weight)
+                            let weight;
+                            if (isAdditive) { // Additive: 1 + (0.1 * count)
+                                weight = 1 + (0.1 * count);
+                            } else { // Multiplicative: 1.1^count
+                                weight = Math.pow(1.1, count);
+                            }
+                            return `(${content}:${weight.toFixed(2)})`;
+                        }
                     }
-                } else { // Multiplicative calculation (default)
-                    if (braceCount > 0) {
-                        weight = Math.pow(1.05, braceCount);
-                    } else if (bracketCount > 0) {
-                        weight = Math.pow(1 / 1.05, bracketCount);
+                    
+                    // Rule for (tag:weight)
+                    const sdWeightRegex = /^\s*\((.+?):(-?\d+\.?\d*)\)\s*$/;
+                    if (sdWeightRegex.test(tag)) {
+                        return tag.replace(/_/g, ' ');
                     }
-                }
-                
-                if (weight < 0) {
-                    weight = 0;
-                }
 
-                const roundedWeight = weight.toFixed(2);
+                    // Rule for [from:to:when]
+                    const promptEditRegex = /^\[(.*?):(.*?):(\d+\.?\d*)\]$/;
+                    if (promptEditRegex.test(tag)) {
+                        return tag.replace(/_/g, ' ');
+                    }
 
-                return `(${content}:${roundedWeight})`;
+                    // Rule for {A|B|C}
+                    const randomChoiceRegex = /^\{([^{}]*\|[^{}]*)\}$/;
+                    const randomChoiceMatch = tag.match(randomChoiceRegex);
+                    if (randomChoiceMatch) {
+                        let content = randomChoiceMatch[1].split('|').map(t => t.trim().replace(/_/g, ' ')).join('|');
+                        return `{${content}}`;
+                    }
+
+                    // Rule: 1.5::tag::
+                    const weightRegex = /^(\d+\.?\d*)::(.*?)::$/;
+                    const weightMatch = tag.match(weightRegex);
+                    if (weightMatch) {
+                        const weight = parseFloat(weightMatch[1]);
+                        let content = weightMatch[2].trim().replace(/_/g, ' ').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+                        return `(${content}:${weight.toFixed(2)})`;
+                    }
+
+                    // Rule: ||tag1|tag2||
+                    const crossPromptRegex = /^\|\|(.*?)\|\|$/;
+                    const crossPromptMatch = tag.match(crossPromptRegex);
+                    if (crossPromptMatch) {
+                        let content = crossPromptMatch[1].split('|').map(t => t.trim().replace(/_/g, ' ')).join('|');
+                        return `[${content}]`;
+                    }
+
+                    // NovelAI rules for {} and []
+                    let content = tag;
+                    let braceCount = 0;
+                    let bracketCount = 0;
+
+                    while (content.startsWith('{') && content.endsWith('}')) {
+                        braceCount++;
+                        content = content.substring(1, content.length - 1).trim();
+                    }
+
+                    while (content.startsWith('[') && content.endsWith(']')) {
+                        bracketCount++;
+                        content = content.substring(1, content.length - 1).trim();
+                    }
+
+                    content = content.replace(/_/g, ' ');
+
+                    if (content.toLowerCase().startsWith('artist:')) {
+                        content = content.substring(7).trim();
+                    } else if (content.toLowerCase().startsWith('by ')) {
+                        content = content.substring(3).trim();
+                    }
+                    
+                    if (!content) return null;
+
+                    if (braceCount === 0 && bracketCount === 0) {
+                        // Not a NAI weight tag, just a regular tag. Escape if needed.
+                        return content.replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+                    }
+
+                    let weight;
+                    if (isAdditive) {
+                        weight = (braceCount > 0) ? 1 + (0.05 * braceCount) : 1 - (0.05 * bracketCount);
+                    } else {
+                        weight = (braceCount > 0) ? Math.pow(1.05, braceCount) : Math.pow(1 / 1.05, bracketCount);
+                    }
+                    
+                    if (weight < 0) weight = 0;
+                    
+                    return `(${content.replace(/\(/g, '\\(').replace(/\)/g, '\\)')}:${weight.toFixed(2)})`;
+                });
+
+                let processedLine = convertedTags.filter(t => t !== null).join(', ');
+                if (hasTrailingComma && processedLine) {
+                    processedLine += ',';
+                }
+                return processedLine;
             });
 
-            document.getElementById('sd-prompt').value = convertedTags.join(', ');
+            document.getElementById('sd-prompt').value = processedLines.join('\n');
         });
     </script>
 
